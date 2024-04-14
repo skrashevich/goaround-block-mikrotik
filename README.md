@@ -44,22 +44,34 @@ The tool can be run from the command line with various flags to control its oper
 
 ### Examples
 
+**Add blocked domain to routes
+```
+$ ./goaround-block-mikrotik -address 192.168.88.1 -username admin -password yourpassword -gateway l2tp-out1 -domain instagram.com
+
+/ip/route/add =dst-address=31.13.72.174/32 =gateway=l2tp-out1 =comment=instagram.com
+/ip/route/add =dst-address=2a03:2880:f20a:e5:face:b00c:0:4420/32 =gateway=l2tp-out1 =comment=instagram.com
+
+Routes updated successfully.
+```
+
 **List Current Routes**:
 
 ```
-./goaround-block-mikrotik  -address 192.168.88.1:8728 -username admin -password yourpassword -gateway 192.168.88.1 -domain example.com -list
+$ ./goaround-block-mikrotik -address 192.168.88.1 -username admin -password yourpassword -gateway l2tp-out1 -list | grep instagram
+
+Route ID: *80000B82, Dst Address: 31.13.72.174/32, Gateway: l2tp-out1, Comment: instagram.com
 ```
 
 **Update All Routes**:
 
 ```
-./goaround-block-mikrotik  -address 192.168.88.1:8728 -username admin -password yourpassword -gateway 192.168.88.1 -update
+./goaround-block-mikrotik -address 192.168.88.1 -username admin -password yourpassword -gateway l2tp-out1 -update
 ```
 
 **Dry Run of Update**:
 
 ```
-./goaround-block-mikrotik  -address 192.168.88.1:8728 -username admin -password yourpassword -gateway 192.168.88.1 -update -dry
+./goaround-block-mikrotik -address 192.168.88.1 -username admin -password yourpassword -gateway l2tp-out1 -update -dry
 ```
 
 ## Contributing
