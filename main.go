@@ -19,7 +19,7 @@ type RouteInfo struct {
 }
 
 func main() {
-	domain, address, username, password, gateway, listRoutes, doUpdate := parseFlags()
+	domain, address, username, password, gateway, listRoutes, doUpdate, dryRun := parseFlags()
 
 	c, err := connectToRouter(address, username, password)
 	if err != nil {
@@ -28,7 +28,7 @@ func main() {
 	defer c.Close()
 
 	if listRoutes {
-		if err, _ := listRoutesWithCommentAndGateway(c, gateway, doUpdate); err != nil {
+		if _, err := listRoutesWithCommentAndGateway(c, gateway, doUpdate, dryRun); err != nil {
 			exitWithError(fmt.Sprintf("Failed to list routes: %v", err))
 		}
 
@@ -40,14 +40,16 @@ func main() {
 		exitWithError(fmt.Sprintf("Failed to resolve domain %s: %v", domain, err))
 	}
 
-	if err := updateRoutes(c, domain, ips, gateway); err != nil {
+	if err := updateRoutes(c, domain, ips, gateway, dryRun); err != nil {
 		exitWithError(err.Error())
 	}
 
-	fmt.Println("Routes updated successfully.")
+	if !dryRun {
+		fmt.Println("Routes updated successfully.")
+	}
 }
 
-func parseFlags() (domain, address, username, password, gateway string, listRoutes bool, doUpdate bool) {
+func parseFlags() (domain, address, username, password, gateway string, listRoutes bool, doUpdate bool, dryRun bool) {
 	flag.StringVar(&domain, "domain", "", "Domain name to resolve and route")
 	flag.StringVar(&address, "address", "", "MikroTik RouterOS device address")
 	flag.StringVar(&username, "username", "admin", "Username for MikroTik RouterOS")
@@ -55,13 +57,19 @@ func parseFlags() (domain, address, username, password, gateway string, listRout
 	flag.StringVar(&gateway, "gateway", "", "Gateway IP address for the new routes")
 	flag.BoolVar(&listRoutes, "list", false, "List existing routes with the specified domain and gateway")
 	flag.BoolVar(&doUpdate, "update", false, "Re-resolve existing records and update route records")
+	flag.BoolVar(&dryRun, "dry", false, "Simulate the actions without making any changes")
 
 	flag.Parse()
+
+	if doUpdate {
+		listRoutes = true
+	}
 
 	if ((domain == "" || gateway == "") && !listRoutes) || address == "" || password == "" {
 		exitWithError("Domain, address, password, and gateway are required")
 	}
-	return domain, address, username, password, gateway, listRoutes, doUpdate
+
+	return domain, address, username, password, gateway, listRoutes, doUpdate, dryRun
 }
 
 const defaultRouterOSPort = "8728"
@@ -89,19 +97,19 @@ func resolveDomain(domain string) ([]net.IP, error) {
 	return net.LookupIP(domain)
 }
 
-func updateRoutes(c *routeros.Client, domain string, ips []net.IP, gateway string) error {
-	if err := removeExistingRoutes(c, domain); err != nil {
+func updateRoutes(c *routeros.Client, domain string, ips []net.IP, gateway string, dryRun bool) error {
+	if err := removeExistingRoutes(c, domain, dryRun); err != nil {
 		fmt.Printf("Failed to remove existing routes: %v", err)
 	}
 	for _, ip := range ips {
-		if err := addRoute(c, ip, domain, gateway); err != nil {
+		if err := addRoute(c, ip, domain, gateway, dryRun); err != nil {
 			fmt.Printf("Failed to add route for IP %s: %v\n", ip.String(), err)
 		}
 	}
 	return nil
 }
 
-func removeExistingRoutes(c *routeros.Client, domain string) error {
+func removeExistingRoutes(c *routeros.Client, domain string, dryRun bool) error {
 	r, err := c.Run("/ip/route/print", "?comment="+domain)
 	if err != nil {
 		return err
@@ -110,24 +118,37 @@ func removeExistingRoutes(c *routeros.Client, domain string) error {
 	for _, re := range r.Re {
 		cmd := "/ip/route/remove"
 		args := "=numbers=" + re.Map[".id"]
-		if _, err = c.Run(cmd, args); err != nil {
-			fmt.Printf("Failed to remove route: %v\n", err)
+		if dryRun {
+			fmt.Printf("[removeExistingRoutes]: %s %s\n", cmd, args)
+		} else {
+			if _, err = c.Run(cmd, args); err != nil {
+				fmt.Printf("Failed to remove route: %v\n", err)
+			}
+
+			fmt.Println("Remove route: " + cmd + " " + args)
 		}
-		fmt.Println("Remove route: " + cmd + " " + args)
 	}
 	return nil
 }
 
 func sanitizeDomain(domain string) string {
-	// Replace all instances of "=" with "\="
-	safeDomain := strings.ReplaceAll(domain, "=", "\\=")
-	// Add more sanitization steps if necessary.
-	// For example, you might want to escape other special characters or implement
-	// stricter validation rules depending on your use case and security requirements.
+	// Map of characters to be replaced: key is the target, value is the replacement.
+	replacements := map[string]string{
+		"=": "\\=",
+		// Add more replacements as needed. For example:
+		// "&": "\\&",
+		// "?": "\\?",
+	}
+
+	safeDomain := domain
+	for target, replacement := range replacements {
+		safeDomain = strings.ReplaceAll(safeDomain, target, replacement)
+	}
+
 	return safeDomain
 }
 
-func addRoute(c *routeros.Client, ip net.IP, domain string, gateway string) error {
+func addRoute(c *routeros.Client, ip net.IP, domain string, gateway string, dryRun bool) error {
 	if ip == nil {
 		return fmt.Errorf("invalid IP address")
 	}
@@ -150,11 +171,15 @@ func addRoute(c *routeros.Client, ip net.IP, domain string, gateway string) erro
 		// It's valid, add the check-gateway line
 		args = append(args, "=check-gateway=arp")
 	}
+	var err error
+	if dryRun {
+		fmt.Printf("[addRoute] %s\n", args)
+	} else {
+		_, err = c.RunArgs(args)
+		// err := error(nil)
 
-	_, err := c.RunArgs(args)
-	// err := error(nil)
-
-	fmt.Println(strings.Join(args, " "))
+		fmt.Println(strings.Join(args, " "))
+	}
 
 	return err
 }
@@ -163,10 +188,10 @@ func exitWithError(msg string) {
 	fmt.Println(msg)
 	os.Exit(1)
 }
-func listRoutesWithCommentAndGateway(c *routeros.Client, gateway string, update bool) (error, []RouteInfo) {
+func listRoutesWithCommentAndGateway(c *routeros.Client, gateway string, update bool, dryRun bool) ([]RouteInfo, error) {
 	r, err := c.Run("/ip/route/print")
 	if err != nil {
-		return err, nil
+		return nil, err
 	}
 
 	var routes []RouteInfo
@@ -190,12 +215,21 @@ func listRoutesWithCommentAndGateway(c *routeros.Client, gateway string, update 
 			fmt.Printf("Route ID: %s, Dst Address: %s, Gateway: %s, Comment: %s\n",
 				rinfo.RouteID, rinfo.DstAddress, rinfo.Gateway, comment)
 
+			var ips []net.IP
+
 			if update {
-				ip, _ := resolveDomain(rinfo.DstAddress)
-				updateRoutes(c, rinfo.Comment, ip, rinfo.Gateway)
+				ips, err = resolveDomain(rinfo.Comment)
+				if err != nil {
+					fmt.Printf("Failed to resolve domain %s for route ID %s: %v\n", rinfo.Comment, rinfo.RouteID, err)
+					continue
+				}
+			}
+
+			if update && !dryRun {
+				updateRoutes(c, rinfo.Comment, ips, rinfo.Gateway, dryRun)
 			}
 		}
 	}
 
-	return nil, routes
+	return routes, nil
 }

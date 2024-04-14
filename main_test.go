@@ -1,65 +1,62 @@
 package main
 
 import (
-	"net"
-	"reflect"
 	"testing"
 )
 
-// mockLookupIP is a function that matches the signature of net.LookupIP and can be used to override behavior in tests.
-var mockLookupIP = net.LookupIP
-
 func TestResolveDomain(t *testing.T) {
-	// Override the net.LookupIP function with a mock function for testing.
-	mockLookupIP = func(domain string) ([]net.IP, error) {
-		if domain == "example.com" {
-			return []net.IP{net.ParseIP("93.184.216.34"), net.ParseIP("2606:2800:220:1:248:1893:25c8:1946")}, nil
-		}
-		if domain == "nonexistent.domain" {
-			return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
-		}
-		return nil, nil
-	}
-
+	// Define test cases
 	tests := []struct {
-		name    string
 		domain  string
-		wantIPs []net.IP
 		wantErr bool
 	}{
+		{"google.com", false},                // Assuming google.com will always resolve
+		{"invalid-domain-name.likely", true}, // An invalid domain name should result in an error
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.domain, func(t *testing.T) {
+			got, err := resolveDomain(tt.domain)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("resolveDomain() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && len(got) == 0 {
+				t.Errorf("Expected at least one IP address for %s, got none", tt.domain)
+			}
+		})
+	}
+}
+
+// TestSanitizeDomain tests the sanitizeDomain function for various cases.
+func TestSanitizeDomain(t *testing.T) {
+	tests := []struct {
+		name   string
+		domain string
+		want   string
+	}{
 		{
-			name:    "valid domain",
-			domain:  "example.com",
-			wantIPs: []net.IP{net.ParseIP("93.184.216.34"), net.ParseIP("2606:2800:220:1:248:1893:25c8:1946")},
-			wantErr: false,
+			name:   "ContainsEqual",
+			domain: "example.com?key=value",
+			want:   "example.com?key\\=value",
 		},
 		{
-			name:    "nonexistent domain",
-			domain:  "nonexistent.domain",
-			wantIPs: nil,
-			wantErr: true,
+			name:   "NoSpecialChars",
+			domain: "example.com",
+			want:   "example.com",
 		},
 		{
-			name:    "empty domain",
-			domain:  "",
-			wantIPs: nil,
-			wantErr: true,
+			name:   "MultipleEquals",
+			domain: "example.com?one=1&two=2",
+			want:   "example.com?one\\=1&two\\=2",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotIPs, err := resolveDomain(tt.domain)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("resolveDomain() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !reflect.DeepEqual(gotIPs, tt.wantIPs) {
-				t.Errorf("resolveDomain() gotIPs = %v, want %v", gotIPs, tt.wantIPs)
+			if got := sanitizeDomain(tt.domain); got != tt.want {
+				t.Errorf("sanitizeDomain(%q) = %q, want %q", tt.domain, got, tt.want)
 			}
 		})
 	}
-
-	// Reset the mockLookupIP to its original state after the tests.
-	mockLookupIP = net.LookupIP
 }
