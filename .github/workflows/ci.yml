@@ -7,8 +7,22 @@ on:
 
 jobs:
   build:
-    name: Build
+    name: Build on ${{ matrix.os }} for ${{ matrix.arch }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [windows, linux, macos]
+        arch: [amd64, arm64]
+        include:
+          - os: windows
+            goos: windows
+            ext: .exe
+          - os: linux
+            goos: linux
+            ext: ''
+          - os: macos
+            goos: darwin
+            ext: ''
 
     steps:
       - name: Set up Git repository
@@ -17,13 +31,22 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22' # Specify the Go version
+          go-version: '1.22'
+
+      - name: Set GOOS and GOARCH
+        run: |
+          echo "GOOS=${{ matrix.goos }}" >> $GITHUB_ENV
+          echo "GOARCH=${{ matrix.arch }}" >> $GITHUB_ENV
 
       - name: Build
-        run: go build -v ./...
+        run: |
+          go build -ldflags "-s -w" -trimpath -v -o gbm-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
 
-      - name: Run tests
-        run: go test -v ./...
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: gbm-${{ matrix.os }}-${{ matrix.arch }}
+          path: gbm-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
 
   release:
     name: Release
@@ -33,6 +56,9 @@ jobs:
     steps:
       - name: Set up Git repository
         uses: actions/checkout@v4
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v3
 
       - name: Create Release
         uses: actions/create-release@v1
