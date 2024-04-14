@@ -23,6 +23,10 @@ This tool allows for management of routing entries in MikroTik RouterOS based on
    go install github.com/skrashevich/goaround-block-mikrotik@latest
    ```
 
+__Nightly builds:__
+
+   https://nightly.link/skrashevich/goaround-block-mikrotik/workflows/ci/main
+
 ## Usage
 
 The tool can be run from the command line with various flags to control its operation:
