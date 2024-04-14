@@ -11,6 +11,8 @@ import (
 	routeros "github.com/swoga/go-routeros"
 )
 
+var Version = "0.0.1"
+
 type RouteInfo struct {
 	RouteID    string
 	DstAddress string
@@ -58,8 +60,14 @@ func parseFlags() (domain, address, username, password, gateway string, listRout
 	flag.BoolVar(&listRoutes, "list", false, "List existing routes with the specified domain and gateway")
 	flag.BoolVar(&doUpdate, "update", false, "Re-resolve existing records and update route records")
 	flag.BoolVar(&dryRun, "dry", false, "Simulate the actions without making any changes")
+	version := flag.Bool("version", false, "Print the version of the application and exit")
 
 	flag.Parse()
+
+	if *version {
+		fmt.Println(Version)
+		os.Exit(0)
+	}
 
 	if doUpdate {
 		listRoutes = true
