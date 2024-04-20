@@ -8,7 +8,9 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/spf13/viper"
 	routeros "github.com/swoga/go-routeros"
+	"github.com/zalando/go-keyring"
 )
 
 var Version = "0.0.1"
@@ -20,14 +22,76 @@ type RouteInfo struct {
 	Comment    string
 }
 
+func initConfig() {
+	configDir, err := os.UserConfigDir() // Get the system's default user config directory
+	if err != nil {
+		fmt.Printf("Error finding user config dir: %s\n", err)
+		return
+	}
+
+	configPath := configDir + "/go-mikrotik-block"    // Specify your app's config directory name
+	fmt.Println("Looking for config in:", configPath) // Debugging line to check the path
+
+	viper.AddConfigPath(configPath)
+	viper.AddConfigPath(".")      // Fallback: current directory
+	viper.SetConfigName("config") // Name of config file (without extension)
+	viper.SetConfigType("yaml")   // EXPECTED to be yaml
+
+	viper.AutomaticEnv() // Read from environment variables
+
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+			// Config file not found; ignore error if desired
+			fmt.Println("No config file found. Using defaults and/or environment variables")
+		} else {
+			// Config file was found but another error was produced
+			fmt.Printf("Error reading config file: %s\n", err)
+		}
+	} else {
+		fmt.Println("Using config file:", viper.ConfigFileUsed())
+	}
+}
+
+func saveCreds(service, user, password string) error {
+	err := keyring.Set(service, user, password)
+	if err != nil {
+		fmt.Println(fmt.Errorf("%w\n", err))
+		return err
+	}
+	return nil
+}
+
+func getCreds(service, user string) (string, error) {
+	secret, err := keyring.Get(service, user)
+	if err != nil && err.Error() != "secret not found in keyring" {
+		fmt.Println(fmt.Errorf("%w\n", err))
+		return "", err
+	}
+	return secret, nil
+}
+
 func main() {
-	domain, address, username, password, gateway, listRoutes, doUpdate, dryRun := parseFlags()
+	initConfig()
+	domain, address, username, password, gateway, listRoutes, doUpdate, dryRun, version, err := parseFlags()
+	if err != nil {
+		fmt.Printf("%v", err)
+		os.Exit(1)
+	}
+	if version {
+		fmt.Println(Version)
+		os.Exit(0)
+	}
 
 	c, err := connectToRouter(address, username, password)
 	if err != nil {
 		exitWithError(fmt.Sprintf("Failed to connect to RouterOS: %v", err))
 	}
 	defer c.Close()
+
+	viper.Set("gateway", gateway)
+	viper.Set("address", address)
+	viper.Set("username", username)
+	saveCreds(address, username, password)
 
 	if listRoutes {
 		if _, err := listRoutesWithCommentAndGateway(c, gateway, doUpdate, dryRun); err != nil {
@@ -49,35 +113,68 @@ func main() {
 	if !dryRun {
 		fmt.Println("Routes updated successfully.")
 	}
+
+	if err := viper.SafeWriteConfig(); err != nil {
+		if err := viper.WriteConfig(); err != nil {
+			exitWithError(err.Error())
+		}
+	}
 }
 
-func parseFlags() (domain, address, username, password, gateway string, listRoutes bool, doUpdate bool, dryRun bool) {
+func parseFlags() (domain, address, username, password, gateway string, listRoutes bool, doUpdate bool, dryRun bool, version bool, err error) {
 	flag.StringVar(&domain, "domain", "", "Domain name to resolve and route")
-	flag.StringVar(&address, "address", "", "MikroTik RouterOS device address")
-	flag.StringVar(&username, "username", "admin", "Username for MikroTik RouterOS")
+	flag.StringVar(&address, "address", viper.GetString("address"), "MikroTik RouterOS device address")
+	flag.StringVar(&username, "username", viper.GetString("username"), "Username for MikroTik RouterOS")
 	flag.StringVar(&password, "password", "", "Password for MikroTik RouterOS")
-	flag.StringVar(&gateway, "gateway", "", "Gateway IP address for the new routes")
+	flag.StringVar(&gateway, "gateway", viper.GetString("gateway"), "Gateway IP address for the new routes")
 	flag.BoolVar(&listRoutes, "list", false, "List existing routes with the specified domain and gateway")
 	flag.BoolVar(&doUpdate, "update", false, "Re-resolve existing records and update route records")
 	flag.BoolVar(&dryRun, "dry", false, "Simulate the actions without making any changes")
-	version := flag.Bool("version", false, "Print the version of the application and exit")
+	flag.BoolVar(&version, "version", false, "Print the version of the application and exit")
 
 	flag.Parse()
 
-	if *version {
-		fmt.Println(Version)
-		os.Exit(0)
+	if password == "" {
+		savedpass, err := getCreds(address, username)
+		if err != nil {
+			fmt.Printf("Failed to get password from keychain: %v", err)
+			return domain, address, username, password, gateway, listRoutes, doUpdate, dryRun, version, fmt.Errorf("Error load credentials from keychain: %v", err)
+		}
+		password = savedpass
 	}
 
 	if doUpdate {
 		listRoutes = true
 	}
 
-	if ((domain == "" || gateway == "") && !listRoutes) || address == "" || password == "" {
-		exitWithError("Domain, address, password, and gateway are required")
+	if ((domain == "" || gateway == "") && !listRoutes) || address == "" || password == "" || username == "" {
+
+		var missingParams []string
+
+		if domain == "" {
+			missingParams = append(missingParams, "domain")
+		}
+		if address == "" {
+			missingParams = append(missingParams, "address")
+		}
+		if username == "" {
+			missingParams = append(missingParams, "username")
+		}
+		if password == "" {
+			missingParams = append(missingParams, "password")
+		}
+		if gateway == "" && !listRoutes {
+			missingParams = append(missingParams, "gateway")
+		}
+		if len(missingParams) > 0 {
+			err = fmt.Errorf("Missing required parameters: %s\n", strings.Join(missingParams, ", "))
+		}
+
+		// err = fmt.Errorf("Domain, address, username, password, and gateway are required")
+		return domain, address, username, password, gateway, listRoutes, doUpdate, dryRun, version, err
 	}
 
-	return domain, address, username, password, gateway, listRoutes, doUpdate, dryRun
+	return domain, address, username, password, gateway, listRoutes, doUpdate, dryRun, version, nil
 }
 
 const defaultRouterOSPort = "8728"
@@ -196,48 +293,60 @@ func exitWithError(msg string) {
 	fmt.Println(msg)
 	os.Exit(1)
 }
+
+var hostnameRegex = regexp.MustCompile(`^(?i)[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+
 func listRoutesWithCommentAndGateway(c *routeros.Client, gateway string, update bool, dryRun bool) ([]RouteInfo, error) {
+	routes, err := fetchRoutes(c)
+	if err != nil {
+		return nil, err
+	}
+
+	filteredRoutes := filterRoutesByGatewayAndComment(routes, gateway)
+	if update && !dryRun {
+		for i, route := range filteredRoutes {
+			resolveAndUpdateRoute(c, &filteredRoutes[i], route.Comment, dryRun)
+		}
+	}
+
+	return filteredRoutes, nil
+}
+
+func fetchRoutes(c *routeros.Client) ([]RouteInfo, error) {
 	r, err := c.Run("/ip/route/print")
 	if err != nil {
 		return nil, err
 	}
 
 	var routes []RouteInfo
-
-	// Regular expression to match a valid hostname (simplified version)
-	hostnameRegex := regexp.MustCompile(`^(?i)[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
-
 	for _, re := range r.Re {
-		routeGateway, hasGateway := re.Map["gateway"]
-		comment, hasComment := re.Map["comment"]
+		routes = append(routes, RouteInfo{
+			RouteID:    re.Map[".id"],
+			DstAddress: re.Map["dst-address"],
+			Gateway:    re.Map["gateway"],
+			Comment:    re.Map["comment"],
+		})
+	}
+	return routes, nil
+}
 
-		// Check if the route matches the given gateway and has a valid hostname as a comment
-		if hasGateway && routeGateway == gateway && hasComment && hostnameRegex.MatchString(comment) {
-			rinfo := RouteInfo{
-				RouteID:    re.Map[".id"],
-				DstAddress: re.Map["dst-address"],
-				Gateway:    routeGateway,
-				Comment:    comment,
-			}
-			routes = append(routes, rinfo)
+func filterRoutesByGatewayAndComment(routes []RouteInfo, gateway string) []RouteInfo {
+	var filteredRoutes []RouteInfo
+	for _, route := range routes {
+		if route.Gateway == gateway && hostnameRegex.MatchString(route.Comment) {
 			fmt.Printf("Route ID: %s, Dst Address: %s, Gateway: %s, Comment: %s\n",
-				rinfo.RouteID, rinfo.DstAddress, rinfo.Gateway, comment)
-
-			var ips []net.IP
-
-			if update {
-				ips, err = resolveDomain(rinfo.Comment)
-				if err != nil {
-					fmt.Printf("Failed to resolve domain %s for route ID %s: %v\n", rinfo.Comment, rinfo.RouteID, err)
-					continue
-				}
-			}
-
-			if update && !dryRun {
-				updateRoutes(c, rinfo.Comment, ips, rinfo.Gateway, dryRun)
-			}
+				route.RouteID, route.DstAddress, route.Gateway, route.Comment)
+			filteredRoutes = append(filteredRoutes, route)
 		}
 	}
+	return filteredRoutes
+}
 
-	return routes, nil
+func resolveAndUpdateRoute(c *routeros.Client, route *RouteInfo, domain string, dryRun bool) {
+	ips, err := resolveDomain(domain)
+	if err != nil {
+		fmt.Printf("Failed to resolve domain %s for route ID %s: %v\n", domain, route.RouteID, err)
+		return
+	}
+	updateRoutes(c, domain, ips, route.Gateway, dryRun)
 }
