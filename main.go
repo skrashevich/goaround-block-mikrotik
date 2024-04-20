@@ -5,15 +5,21 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
-	"github.com/spf13/viper"
+	"github.com/knadh/koanf/parsers/yaml"
+	kfile "github.com/knadh/koanf/providers/file"
+	koanf "github.com/knadh/koanf/v2"
 	routeros "github.com/swoga/go-routeros"
 	"github.com/zalando/go-keyring"
 )
 
-var Version = "0.0.1"
+var (
+	Version = "0.0.1"
+	k       = koanf.New(".")
+)
 
 type RouteInfo struct {
 	RouteID    string
@@ -22,34 +28,29 @@ type RouteInfo struct {
 	Comment    string
 }
 
-func initConfig() {
+func getConfigFile() (string, error) {
 	configDir, err := os.UserConfigDir() // Get the system's default user config directory
 	if err != nil {
 		fmt.Printf("Error finding user config dir: %s\n", err)
-		return
+		return "", err
 	}
 
-	configPath := configDir + "/go-mikrotik-block"    // Specify your app's config directory name
-	fmt.Println("Looking for config in:", configPath) // Debugging line to check the path
+	configPath := filepath.Join(configDir, "go-mikrotik-block")
+	os.MkdirAll(configPath, 0700)
+	configFile := filepath.Join(configPath, "config.yaml")
+	return configFile, nil
+}
 
-	viper.AddConfigPath(configPath)
-	viper.AddConfigPath(".")      // Fallback: current directory
-	viper.SetConfigName("config") // Name of config file (without extension)
-	viper.SetConfigType("yaml")   // EXPECTED to be yaml
+func initConfig() {
+	configFile, _ := getConfigFile()
+	fmt.Println("Looking for config in:", configFile)
 
-	viper.AutomaticEnv() // Read from environment variables
-
-	if err := viper.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			// Config file not found; ignore error if desired
-			fmt.Println("No config file found. Using defaults and/or environment variables")
-		} else {
-			// Config file was found but another error was produced
-			fmt.Printf("Error reading config file: %s\n", err)
-		}
+	if err := k.Load(kfile.Provider(configFile), yaml.Parser()); err != nil {
+		fmt.Printf("Error reading config file: %s\n", err)
 	} else {
-		fmt.Println("Using config file:", viper.ConfigFileUsed())
+		fmt.Println("Using config file:", configFile)
 	}
+
 }
 
 func saveCreds(service, user, password string) error {
@@ -88,9 +89,9 @@ func main() {
 	}
 	defer c.Close()
 
-	viper.Set("gateway", gateway)
-	viper.Set("address", address)
-	viper.Set("username", username)
+	k.Set("gateway", gateway)
+	k.Set("address", address)
+	k.Set("username", username)
 	saveCreds(address, username, password)
 
 	if listRoutes {
@@ -114,19 +115,28 @@ func main() {
 		fmt.Println("Routes updated successfully.")
 	}
 
-	if err := viper.SafeWriteConfig(); err != nil {
-		if err := viper.WriteConfig(); err != nil {
-			exitWithError(err.Error())
-		}
+	if err := saveConfig(); err != nil {
+		exitWithError(err.Error())
 	}
+}
+
+func saveConfig() error {
+	confBytes, err := k.Marshal(yaml.Parser())
+	if err != nil {
+		return err
+	}
+
+	configFile, _ := getConfigFile()
+
+	return os.WriteFile(configFile, confBytes, 0644)
 }
 
 func parseFlags() (domain, address, username, password, gateway string, listRoutes bool, doUpdate bool, dryRun bool, version bool, err error) {
 	flag.StringVar(&domain, "domain", "", "Domain name to resolve and route")
-	flag.StringVar(&address, "address", viper.GetString("address"), "MikroTik RouterOS device address")
-	flag.StringVar(&username, "username", viper.GetString("username"), "Username for MikroTik RouterOS")
+	flag.StringVar(&address, "address", k.String("address"), "MikroTik RouterOS device address")
+	flag.StringVar(&username, "username", k.String("username"), "Username for MikroTik RouterOS")
 	flag.StringVar(&password, "password", "", "Password for MikroTik RouterOS")
-	flag.StringVar(&gateway, "gateway", viper.GetString("gateway"), "Gateway IP address for the new routes")
+	flag.StringVar(&gateway, "gateway", k.String("gateway"), "Gateway IP address for the new routes")
 	flag.BoolVar(&listRoutes, "list", false, "List existing routes with the specified domain and gateway")
 	flag.BoolVar(&doUpdate, "update", false, "Re-resolve existing records and update route records")
 	flag.BoolVar(&dryRun, "dry", false, "Simulate the actions without making any changes")
