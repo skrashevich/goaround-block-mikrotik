@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cat <<'EOF' | go run -\\npackage main\\n\\nimport (\\n\\t\\\"context\\\"\\n\\t\\\"fmt\\\"\\n\\t\\\"net\\\"\\n\\t\\\"sync\\\"\\n\\t\\\"time\\\"\\n)\\n\\nvar resolvers = []string{\\n\\t\\\"8.8.8.8:53\\\", \\\"8.8.4.4:53\\\", \\\"1.1.1.1:5...",
+  "error": "Exit code 1\ngo: no go files listed",
+  "timestamp": "2026-03-14T00:13:20.425Z",
+  "retry_count": 1
+}

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
@@ -243,8 +244,116 @@ func connectToRouter(address, username, password string) (*routeros.Client, erro
 	return routeros.DialContext(ctx, address, username, password, 10*time.Second)
 }
 
+// Public DNS resolvers from different providers and regions.
+// Using multiple resolvers increases the chance of discovering all IPs
+// served by geo-distributed CDNs and DNS-based load balancers.
+var dnsResolvers = []string{
+	// Google
+	"8.8.8.8:53",
+	"8.8.4.4:53",
+	// Cloudflare
+	"1.1.1.1:53",
+	"1.0.0.1:53",
+	// Quad9
+	"9.9.9.9:53",
+	"149.112.112.112:53",
+	// OpenDNS (Cisco)
+	"208.67.222.222:53",
+	"208.67.220.220:53",
+	// Yandex
+	"77.88.8.8:53",
+	"77.88.8.1:53",
+	// Comodo Secure DNS
+	"8.26.56.26:53",
+	"8.20.247.20:53",
+	// Level3 / CenturyLink
+	"4.2.2.1:53",
+	"4.2.2.2:53",
+	// AdGuard
+	"94.140.14.14:53",
+	"94.140.15.15:53",
+	// CleanBrowsing
+	"185.228.168.9:53",
+	"185.228.169.9:53",
+	// Neustar / UltraDNS
+	"64.6.64.6:53",
+	"64.6.65.6:53",
+}
+
 func resolveDomain(domain string) ([]net.IP, error) {
-	return net.LookupIP(domain)
+	type result struct {
+		ips []net.IP
+		src string
+		err error
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ch := make(chan result, len(dnsResolvers)+1)
+	var wg sync.WaitGroup
+
+	// System resolver (uses /etc/resolv.conf, OS cache, etc.)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", domain)
+		ch <- result{ips: ips, src: "system", err: err}
+	}()
+
+	// All public resolvers in parallel
+	for _, server := range dnsResolvers {
+		wg.Add(1)
+		go func(srv string) {
+			defer wg.Done()
+			resolver := &net.Resolver{
+				PreferGo: true,
+				Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+					d := net.Dialer{Timeout: 3 * time.Second}
+					return d.DialContext(ctx, "udp", srv)
+				},
+			}
+			ips, err := resolver.LookupIP(ctx, "ip", domain)
+			ch <- result{ips: ips, src: srv, err: err}
+		}(server)
+	}
+
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	seen := make(map[string]struct{})
+	var allIPs []net.IP
+	var successCount int
+
+	for r := range ch {
+		if r.err != nil {
+			slog.Debug("DNS resolver failed", "resolver", r.src, "error", r.err)
+			continue
+		}
+		successCount++
+		for _, ip := range r.ips {
+			key := ip.String()
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
+				allIPs = append(allIPs, ip)
+			}
+		}
+	}
+
+	if len(allIPs) == 0 {
+		return nil, fmt.Errorf("failed to resolve %s: no IPs from %d resolvers", domain, len(dnsResolvers)+1)
+	}
+
+	slog.Info("Domain resolved",
+		"domain", domain,
+		"unique_ips", len(allIPs),
+		"resolvers_succeeded", successCount,
+		"resolvers_total", len(dnsResolvers)+1,
+	)
+
+	return allIPs, nil
 }
 
 func updateRoutes(c *routeros.Client, domain string, ips []net.IP, gateway string, dryRun bool) error {
