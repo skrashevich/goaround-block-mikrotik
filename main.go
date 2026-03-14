@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -8,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
 	kfile "github.com/knadh/koanf/providers/file"
@@ -29,20 +32,25 @@ type RouteInfo struct {
 }
 
 func getConfigFile() (string, error) {
-	configDir, err := os.UserConfigDir() // Get the system's default user config directory
+	configDir, err := os.UserConfigDir()
 	if err != nil {
-		fmt.Printf("Error finding user config dir: %s\n", err)
-		return "", err
+		return "", fmt.Errorf("finding user config dir: %w", err)
 	}
 
 	configPath := filepath.Join(configDir, "go-mikrotik-block")
-	os.MkdirAll(configPath, 0700)
+	if err := os.MkdirAll(configPath, 0700); err != nil {
+		return "", fmt.Errorf("creating config dir: %w", err)
+	}
 	configFile := filepath.Join(configPath, "config.yaml")
 	return configFile, nil
 }
 
 func initConfig() {
-	configFile, _ := getConfigFile()
+	configFile, err := getConfigFile()
+	if err != nil {
+		fmt.Printf("Warning: %v\n", err)
+		return
+	}
 	fmt.Println("Looking for config in:", configFile)
 
 	if err := k.Load(kfile.Provider(configFile), yaml.Parser()); err != nil {
@@ -50,13 +58,12 @@ func initConfig() {
 	} else {
 		fmt.Println("Using config file:", configFile)
 	}
-
 }
 
 func saveCreds(service, user, password string) error {
 	err := keyring.Set(service, user, password)
 	if err != nil {
-		fmt.Println(fmt.Errorf("%w\n", err))
+		fmt.Printf("Error saving credentials: %v\n", err)
 		return err
 	}
 	return nil
@@ -64,8 +71,11 @@ func saveCreds(service, user, password string) error {
 
 func getCreds(service, user string) (string, error) {
 	secret, err := keyring.Get(service, user)
-	if err != nil && err.Error() != "secret not found in keyring" {
-		fmt.Println(fmt.Errorf("%w\n", err))
+	if err != nil {
+		if errors.Is(err, keyring.ErrNotFound) {
+			return "", nil
+		}
+		fmt.Printf("Error retrieving credentials: %v\n", err)
 		return "", err
 	}
 	return secret, nil
@@ -126,9 +136,12 @@ func saveConfig() error {
 		return err
 	}
 
-	configFile, _ := getConfigFile()
+	configFile, err := getConfigFile()
+	if err != nil {
+		return err
+	}
 
-	return os.WriteFile(configFile, confBytes, 0644)
+	return os.WriteFile(configFile, confBytes, 0600)
 }
 
 func parseFlags() (domain, address, username, password, gateway string, listRoutes bool, doUpdate bool, dryRun bool, version bool, err error) {
@@ -144,11 +157,14 @@ func parseFlags() (domain, address, username, password, gateway string, listRout
 
 	flag.Parse()
 
+	if version {
+		return domain, address, username, password, gateway, listRoutes, doUpdate, dryRun, version, nil
+	}
+
 	if password == "" {
 		savedpass, err := getCreds(address, username)
 		if err != nil {
-			fmt.Printf("Failed to get password from keychain: %v", err)
-			return domain, address, username, password, gateway, listRoutes, doUpdate, dryRun, version, fmt.Errorf("Error load credentials from keychain: %v", err)
+			return domain, address, username, password, gateway, listRoutes, doUpdate, dryRun, version, fmt.Errorf("error loading credentials from keychain: %v", err)
 		}
 		password = savedpass
 	}
@@ -180,7 +196,6 @@ func parseFlags() (domain, address, username, password, gateway string, listRout
 			err = fmt.Errorf("Missing required parameters: %s\n", strings.Join(missingParams, ", "))
 		}
 
-		// err = fmt.Errorf("Domain, address, username, password, and gateway are required")
 		return domain, address, username, password, gateway, listRoutes, doUpdate, dryRun, version, err
 	}
 
@@ -204,8 +219,10 @@ func connectToRouter(address, username, password string) (*routeros.Client, erro
 		port = defaultRouterOSPort // Ensure port is set
 	}
 
-	address = net.JoinHostPort(host, port) // Reconstruct address with proper port
-	return routeros.Dial(address, username, password)
+	address = net.JoinHostPort(host, port)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return routeros.DialContext(ctx, address, username, password, 10*time.Second)
 }
 
 func resolveDomain(domain string) ([]net.IP, error) {
@@ -213,19 +230,21 @@ func resolveDomain(domain string) ([]net.IP, error) {
 }
 
 func updateRoutes(c *routeros.Client, domain string, ips []net.IP, gateway string, dryRun bool) error {
+	var errs []error
 	if err := removeExistingRoutes(c, domain, dryRun); err != nil {
-		fmt.Printf("Failed to remove existing routes: %v", err)
+		errs = append(errs, fmt.Errorf("removing existing routes: %w", err))
 	}
 	for _, ip := range ips {
 		if err := addRoute(c, ip, domain, gateway, dryRun); err != nil {
-			fmt.Printf("Failed to add route for IP %s: %v\n", ip.String(), err)
+			errs = append(errs, fmt.Errorf("adding route for IP %s: %w", ip.String(), err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func removeExistingRoutes(c *routeros.Client, domain string, dryRun bool) error {
-	r, err := c.Run("/ip/route/print", "?comment="+domain)
+	safeDomain := sanitizeDomain(domain)
+	r, err := c.Run("/ip/route/print", "?comment="+safeDomain)
 	if err != nil {
 		return err
 	}
@@ -274,9 +293,14 @@ func addRoute(c *routeros.Client, ip net.IP, domain string, gateway string, dryR
 	// Sanitize the domain to prevent command injection.
 	safeDomain := sanitizeDomain(domain)
 
+	prefix := "/32"
+	if ip.To4() == nil {
+		prefix = "/128"
+	}
+
 	args := []string{
 		"/ip/route/add",
-		"=dst-address=" + ip.String() + "/32",
+		"=dst-address=" + ip.String() + prefix,
 		"=gateway=" + gateway,
 		"=comment=" + safeDomain,
 	}
@@ -291,8 +315,6 @@ func addRoute(c *routeros.Client, ip net.IP, domain string, gateway string, dryR
 		fmt.Printf("[addRoute] %s\n", args)
 	} else {
 		_, err = c.RunArgs(args)
-		// err := error(nil)
-
 		fmt.Println(strings.Join(args, " "))
 	}
 
@@ -313,9 +335,15 @@ func listRoutesWithCommentAndGateway(c *routeros.Client, gateway string, update 
 	}
 
 	filteredRoutes := filterRoutesByGatewayAndComment(routes, gateway)
-	if update && !dryRun {
+	if update {
+		var errs []error
 		for i, route := range filteredRoutes {
-			resolveAndUpdateRoute(c, &filteredRoutes[i], route.Comment, dryRun)
+			if err := resolveAndUpdateRoute(c, &filteredRoutes[i], route.Comment, dryRun); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if err := errors.Join(errs...); err != nil {
+			return filteredRoutes, err
 		}
 	}
 
@@ -352,11 +380,10 @@ func filterRoutesByGatewayAndComment(routes []RouteInfo, gateway string) []Route
 	return filteredRoutes
 }
 
-func resolveAndUpdateRoute(c *routeros.Client, route *RouteInfo, domain string, dryRun bool) {
+func resolveAndUpdateRoute(c *routeros.Client, route *RouteInfo, domain string, dryRun bool) error {
 	ips, err := resolveDomain(domain)
 	if err != nil {
-		fmt.Printf("Failed to resolve domain %s for route ID %s: %v\n", domain, route.RouteID, err)
-		return
+		return fmt.Errorf("resolving domain %s for route ID %s: %w", domain, route.RouteID, err)
 	}
-	updateRoutes(c, domain, ips, route.Gateway, dryRun)
+	return updateRoutes(c, domain, ips, route.Gateway, dryRun)
 }

@@ -1,0 +1,89 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1773443655051,
+  "projectRoot": "/Users/svk/Documents/Projects.nosync/go-mikrotik-block",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Go",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "go.mod"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "go",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {},
+  "hotPaths": [
+    {
+      "path": "main.go",
+      "accessCount": 18,
+      "lastAccessed": 1773444194559,
+      "type": "file"
+    },
+    {
+      "path": "Dockerfile",
+      "accessCount": 3,
+      "lastAccessed": 1773444172913,
+      "type": "file"
+    },
+    {
+      "path": "main_test.go",
+      "accessCount": 2,
+      "lastAccessed": 1773443802103,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 2,
+      "lastAccessed": 1773444096790,
+      "type": "directory"
+    },
+    {
+      "path": "go.mod",
+      "accessCount": 1,
+      "lastAccessed": 1773443756033,
+      "type": "file"
+    },
+    {
+      "path": "go.sum",
+      "accessCount": 1,
+      "lastAccessed": 1773443756267,
+      "type": "file"
+    },
+    {
+      "path": "README.md",
+      "accessCount": 1,
+      "lastAccessed": 1773443756552,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

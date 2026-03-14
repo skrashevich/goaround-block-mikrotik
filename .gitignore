@@ -41,8 +41,7 @@ pprof/
 *.swp
 *.swo
 
-# Temporary files built by Go related tools
-*_test.go
+# Temporary files
 *.orig
 
 goaround-block-mikrotik

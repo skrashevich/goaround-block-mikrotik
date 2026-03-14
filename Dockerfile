@@ -23,7 +23,7 @@ COPY . .
 RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -ldflags '-w -s' -trimpath -o /go/bin/app
 
 # Use a Distroless base image for the final stage to reduce the attack surface and image size
-FROM gcr.io/distroless/static-debian11
+FROM gcr.io/distroless/static-debian12
 
 # Copy the pre-built binary file from the previous stage
 COPY --from=builder /go/bin/app /
