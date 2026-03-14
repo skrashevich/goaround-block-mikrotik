@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	koanf "github.com/knadh/koanf/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/zalando/go-keyring"
 )
@@ -17,7 +18,7 @@ func TestResolveDomain(t *testing.T) {
 		domain  string
 		wantErr bool
 	}{
-		{"google.com", false},                // Assuming google.com will always resolve
+		{"localhost", false},                  // localhost always resolves
 		{"invalid-domain-name.likely", true}, // An invalid domain name should result in an error
 	}
 
@@ -142,7 +143,8 @@ func TestParseFlags(t *testing.T) {
 
 			tc.setupArgs()
 
-			_, _, _, _, _, _, _, _, _, err := parseFlags()
+			k := koanf.New(".")
+			_, err := parseFlags(k)
 
 			if tc.expectError {
 				assert.Error(t, err)

@@ -44,32 +44,32 @@
   "hotPaths": [
     {
       "path": "main.go",
-      "accessCount": 18,
-      "lastAccessed": 1773444194559,
-      "type": "file"
-    },
-    {
-      "path": "Dockerfile",
-      "accessCount": 3,
-      "lastAccessed": 1773444172913,
+      "accessCount": 28,
+      "lastAccessed": 1773447000271,
       "type": "file"
     },
     {
       "path": "main_test.go",
-      "accessCount": 2,
-      "lastAccessed": 1773443802103,
+      "accessCount": 6,
+      "lastAccessed": 1773446882673,
+      "type": "file"
+    },
+    {
+      "path": "Dockerfile",
+      "accessCount": 6,
+      "lastAccessed": 1773446883599,
       "type": "file"
     },
     {
       "path": "",
-      "accessCount": 2,
-      "lastAccessed": 1773444096790,
+      "accessCount": 4,
+      "lastAccessed": 1773446900714,
       "type": "directory"
     },
     {
       "path": "go.mod",
-      "accessCount": 1,
-      "lastAccessed": 1773443756033,
+      "accessCount": 3,
+      "lastAccessed": 1773446884379,
       "type": "file"
     },
     {

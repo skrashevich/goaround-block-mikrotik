@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -21,8 +22,19 @@ import (
 
 var (
 	Version = "0.0.2"
-	k       = koanf.New(".")
 )
+
+type Config struct {
+	Domain     string
+	Address    string
+	Username   string
+	Password   string
+	Gateway    string
+	ListRoutes bool
+	DoUpdate   bool
+	DryRun     bool
+	Version    bool
+}
 
 type RouteInfo struct {
 	RouteID    string
@@ -45,25 +57,25 @@ func getConfigFile() (string, error) {
 	return configFile, nil
 }
 
-func initConfig() {
+func initConfig(k *koanf.Koanf) {
 	configFile, err := getConfigFile()
 	if err != nil {
-		fmt.Printf("Warning: %v\n", err)
+		slog.Warn("Config file lookup failed", "error", err)
 		return
 	}
-	fmt.Println("Looking for config in:", configFile)
+	slog.Info("Looking for config", "path", configFile)
 
 	if err := k.Load(kfile.Provider(configFile), yaml.Parser()); err != nil {
-		fmt.Printf("Error reading config file: %s\n", err)
+		slog.Warn("Error reading config file", "error", err)
 	} else {
-		fmt.Println("Using config file:", configFile)
+		slog.Info("Using config file", "path", configFile)
 	}
 }
 
 func saveCreds(service, user, password string) error {
 	err := keyring.Set(service, user, password)
 	if err != nil {
-		fmt.Printf("Error saving credentials: %v\n", err)
+		slog.Error("Error saving credentials", "error", err)
 		return err
 	}
 	return nil
@@ -75,62 +87,66 @@ func getCreds(service, user string) (string, error) {
 		if errors.Is(err, keyring.ErrNotFound) {
 			return "", nil
 		}
-		fmt.Printf("Error retrieving credentials: %v\n", err)
+		slog.Error("Error retrieving credentials", "error", err)
 		return "", err
 	}
 	return secret, nil
 }
 
 func main() {
-	initConfig()
-	domain, address, username, password, gateway, listRoutes, doUpdate, dryRun, version, err := parseFlags()
+	k := koanf.New(".")
+	initConfig(k)
+	cfg, err := parseFlags(k)
 	if err != nil {
-		fmt.Printf("%v", err)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
-	if version {
+	if cfg.Version {
 		fmt.Println(Version)
 		os.Exit(0)
 	}
 
-	c, err := connectToRouter(address, username, password)
+	c, err := connectToRouter(cfg.Address, cfg.Username, cfg.Password)
 	if err != nil {
 		exitWithError(fmt.Sprintf("Failed to connect to RouterOS: %v", err))
 	}
 	defer c.Close()
 
-	k.Set("gateway", gateway)
-	k.Set("address", address)
-	k.Set("username", username)
-	saveCreds(address, username, password)
+	// Password is stored in keyring via saveCreds, never in config file
+	k.Set("gateway", cfg.Gateway)
+	k.Set("address", cfg.Address)
+	k.Set("username", cfg.Username)
+	if err := saveCreds(cfg.Address, cfg.Username, cfg.Password); err != nil {
+		slog.Warn("Failed to save credentials", "error", err)
+	}
 
-	if listRoutes {
-		if _, err := listRoutesWithCommentAndGateway(c, gateway, doUpdate, dryRun); err != nil {
+	if cfg.ListRoutes {
+		if _, err := listRoutesWithCommentAndGateway(c, cfg.Gateway, cfg.DoUpdate, cfg.DryRun); err != nil {
 			exitWithError(fmt.Sprintf("Failed to list routes: %v", err))
 		}
 
 		return // Exit after listing routes
 	}
 
-	ips, err := resolveDomain(domain)
+	ips, err := resolveDomain(cfg.Domain)
 	if err != nil {
-		exitWithError(fmt.Sprintf("Failed to resolve domain %s: %v", domain, err))
+		exitWithError(fmt.Sprintf("Failed to resolve domain %s: %v", cfg.Domain, err))
 	}
 
-	if err := updateRoutes(c, domain, ips, gateway, dryRun); err != nil {
+	if err := updateRoutes(c, cfg.Domain, ips, cfg.Gateway, cfg.DryRun); err != nil {
 		exitWithError(err.Error())
 	}
 
-	if !dryRun {
+	if !cfg.DryRun {
 		fmt.Println("Routes updated successfully.")
 	}
 
-	if err := saveConfig(); err != nil {
+	if err := saveConfig(k); err != nil {
 		exitWithError(err.Error())
 	}
 }
 
-func saveConfig() error {
+func saveConfig(k *koanf.Koanf) error {
 	confBytes, err := k.Marshal(yaml.Parser())
 	if err != nil {
 		return err
@@ -144,62 +160,64 @@ func saveConfig() error {
 	return os.WriteFile(configFile, confBytes, 0600)
 }
 
-func parseFlags() (domain, address, username, password, gateway string, listRoutes bool, doUpdate bool, dryRun bool, version bool, err error) {
-	flag.StringVar(&domain, "domain", "", "Domain name to resolve and route")
-	flag.StringVar(&address, "address", k.String("address"), "MikroTik RouterOS device address")
-	flag.StringVar(&username, "username", k.String("username"), "Username for MikroTik RouterOS")
-	flag.StringVar(&password, "password", "", "Password for MikroTik RouterOS")
-	flag.StringVar(&gateway, "gateway", k.String("gateway"), "Gateway IP address for the new routes")
-	flag.BoolVar(&listRoutes, "list", false, "List existing routes with the specified domain and gateway")
-	flag.BoolVar(&doUpdate, "update", false, "Re-resolve existing records and update route records")
-	flag.BoolVar(&dryRun, "dry", false, "Simulate the actions without making any changes")
-	flag.BoolVar(&version, "version", false, "Print the version of the application and exit")
+func parseFlags(k *koanf.Koanf) (*Config, error) {
+	cfg := &Config{}
+
+	flag.StringVar(&cfg.Domain, "domain", "", "Domain name to resolve and route")
+	flag.StringVar(&cfg.Address, "address", k.String("address"), "MikroTik RouterOS device address")
+	flag.StringVar(&cfg.Username, "username", k.String("username"), "Username for MikroTik RouterOS")
+	flag.StringVar(&cfg.Password, "password", "", "Password for MikroTik RouterOS")
+	flag.StringVar(&cfg.Gateway, "gateway", k.String("gateway"), "Gateway IP address for the new routes")
+	flag.BoolVar(&cfg.ListRoutes, "list", false, "List existing routes with the specified domain and gateway")
+	flag.BoolVar(&cfg.DoUpdate, "update", false, "Re-resolve existing records and update route records")
+	flag.BoolVar(&cfg.DryRun, "dry", false, "Simulate the actions without making any changes")
+	flag.BoolVar(&cfg.Version, "version", false, "Print the version of the application and exit")
 
 	flag.Parse()
 
-	if version {
-		return domain, address, username, password, gateway, listRoutes, doUpdate, dryRun, version, nil
+	if cfg.Version {
+		return cfg, nil
 	}
 
-	if password == "" {
-		savedpass, err := getCreds(address, username)
+	if cfg.Password == "" {
+		savedpass, err := getCreds(cfg.Address, cfg.Username)
 		if err != nil {
-			return domain, address, username, password, gateway, listRoutes, doUpdate, dryRun, version, fmt.Errorf("error loading credentials from keychain: %v", err)
+			return cfg, fmt.Errorf("error loading credentials from keychain: %v", err)
 		}
-		password = savedpass
+		cfg.Password = savedpass
 	}
 
-	if doUpdate {
-		listRoutes = true
+	if cfg.DoUpdate {
+		cfg.ListRoutes = true
 	}
 
-	if ((domain == "" || gateway == "") && !listRoutes) || address == "" || password == "" || username == "" {
+	if ((cfg.Domain == "" || cfg.Gateway == "") && !cfg.ListRoutes) || cfg.Address == "" || cfg.Password == "" || cfg.Username == "" {
 
 		var missingParams []string
 
-		if domain == "" {
+		if cfg.Domain == "" {
 			missingParams = append(missingParams, "domain")
 		}
-		if address == "" {
+		if cfg.Address == "" {
 			missingParams = append(missingParams, "address")
 		}
-		if username == "" {
+		if cfg.Username == "" {
 			missingParams = append(missingParams, "username")
 		}
-		if password == "" {
+		if cfg.Password == "" {
 			missingParams = append(missingParams, "password")
 		}
-		if gateway == "" && !listRoutes {
+		if cfg.Gateway == "" && !cfg.ListRoutes {
 			missingParams = append(missingParams, "gateway")
 		}
 		if len(missingParams) > 0 {
-			err = fmt.Errorf("Missing required parameters: %s\n", strings.Join(missingParams, ", "))
+			return cfg, fmt.Errorf("Missing required parameters: %s\n", strings.Join(missingParams, ", "))
 		}
 
-		return domain, address, username, password, gateway, listRoutes, doUpdate, dryRun, version, err
+		return cfg, nil
 	}
 
-	return domain, address, username, password, gateway, listRoutes, doUpdate, dryRun, version, nil
+	return cfg, nil
 }
 
 const defaultRouterOSPort = "8728"
@@ -249,20 +267,22 @@ func removeExistingRoutes(c *routeros.Client, domain string, dryRun bool) error 
 		return err
 	}
 
+	var errs []error
 	for _, re := range r.Re {
 		cmd := "/ip/route/remove"
 		args := "=numbers=" + re.Map[".id"]
 		if dryRun {
-			fmt.Printf("[removeExistingRoutes]: %s %s\n", cmd, args)
+			slog.Info("Dry run: remove route", "cmd", cmd, "args", args)
 		} else {
 			if _, err = c.Run(cmd, args); err != nil {
-				fmt.Printf("Failed to remove route: %v\n", err)
+				slog.Error("Failed to remove route", "error", err)
+				errs = append(errs, fmt.Errorf("removing route %s: %w", re.Map[".id"], err))
+			} else {
+				slog.Info("Remove route", "cmd", cmd, "args", args)
 			}
-
-			fmt.Println("Remove route: " + cmd + " " + args)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func sanitizeDomain(domain string) string {
@@ -312,10 +332,10 @@ func addRoute(c *routeros.Client, ip net.IP, domain string, gateway string, dryR
 	}
 	var err error
 	if dryRun {
-		fmt.Printf("[addRoute] %s\n", args)
+		slog.Info("Dry run: add route", "args", args)
 	} else {
 		_, err = c.RunArgs(args)
-		fmt.Println(strings.Join(args, " "))
+		slog.Info("Add route", "args", strings.Join(args, " "))
 	}
 
 	return err
