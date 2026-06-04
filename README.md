@@ -25,7 +25,7 @@ This tool allows for management of routing entries in MikroTik RouterOS based on
 
 __Nightly builds:__
 
-   https://nightly.link/skrashevich/goaround-block-mikrotik/workflows/ci/main
+   https://dawnl.ink/skrashevich/goaround-block-mikrotik/workflows/ci/main
 
 ## Usage
 
