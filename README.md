@@ -1,4 +1,8 @@
-# RouterOS Route Management Tool
+# goaround-block-mikrotik
+
+[![Download nightly](https://img.shields.io/badge/dawnl.ink-download%20builds-blue)](https://dawnl.ink/skrashevich/goaround-block-mikrotik/workflows/ci/main)
+
+RouterOS Route Management Tool.
 
 This tool allows for management of routing entries in MikroTik RouterOS based on domain name resolutions. It supports listing existing routes, adding new routes, and updating or removing existing routes, making it suitable for dynamic DNS or IP address management tasks.
 
